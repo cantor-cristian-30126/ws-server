@@ -21,6 +21,14 @@ app.post('/upload', (req, res) => {
     });
 });
 
+app.get('/intruder.jpg', (req, res) => {
+    if (fs.existsSync('intruder.jpg')) {
+        res.sendFile(__dirname + '/intruder.jpg');
+    } else {
+        res.send("No image");
+    }
+});
+
 // alte endpoint-uri
 app.get('/', (req, res) => {
     res.send("Server works");
