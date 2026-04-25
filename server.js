@@ -1,44 +1,27 @@
-const WebSocket = require("ws");
+const express = require('express');
+const fs = require('fs');
 
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: PORT });
+const app = express();
 
-let cameraClient = null;
-let viewers = [];
+app.post('/upload', (req, res) => {
+    let data = [];
 
-console.log("Server pornit pe port", PORT);
+    req.on('data', chunk => {
+        data.push(chunk);
+    });
 
-wss.on("connection", (ws) => {
-  console.log("Client conectat");
+    req.on('end', () => {
+        const buffer = Buffer.concat(data);
 
-  ws.on("message", (message) => {
-    try {
-      const data = JSON.parse(message);
+        fs.writeFileSync('intruder.jpg', buffer);
 
-      if (data.type === "camera") {
-        cameraClient = ws;
-        console.log("Camera conectată");
-      }
-
-      if (data.type === "viewer") {
-        viewers.push(ws);
-        console.log("Viewer conectat");
-      }
-    } catch (e) {
-      // imagine binară de la ESP
-      if (ws === cameraClient) {
-        viewers.forEach((viewer) => {
-          if (viewer.readyState === WebSocket.OPEN) {
-            viewer.send(message);
-          }
-        });
-      }
-    }
-  });
-
-  ws.on("close", () => {
-    console.log("Client deconectat");
-    if (ws === cameraClient) cameraClient = null;
-    viewers = viewers.filter(v => v !== ws);
-  });
+        console.log("Image received!");
+        res.send("OK");
+    });
 });
+
+app.get('/', (req, res) => {
+    res.send("Server works");
+});
+
+app.listen(10000, () => console.log("Server running"));
