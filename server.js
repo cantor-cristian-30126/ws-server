@@ -3,6 +3,7 @@ const fs = require('fs');
 
 const app = express();
 
+// ✅ AICI e corect pus
 app.post('/upload', (req, res) => {
     let data = [];
 
@@ -20,8 +21,10 @@ app.post('/upload', (req, res) => {
     });
 });
 
+// alte endpoint-uri
 app.get('/', (req, res) => {
     res.send("Server works");
 });
 
+// pornire server
 app.listen(10000, () => console.log("Server running"));
