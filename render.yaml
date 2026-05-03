@@ -1,0 +1,16 @@
+# render.yaml – configurație deployment Render
+# Pune acest fișier în rădăcina repository-ului serverului
+
+services:
+  - type: web
+    name: smart-home-camera-server
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: API_KEY
+        value: 57271a26c9cf4eeec7fe46a91f2f4c81
+      - key: NODE_ENV
+        value: production
