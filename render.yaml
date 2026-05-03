@@ -1,12 +1,9 @@
-# render.yaml – configurație deployment Render
-# Pune acest fișier în rădăcina repository-ului serverului
-
 services:
   - type: web
-    name: smart-home-camera-server
+    name: ws-server
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && node download-models.js
     startCommand: node server.js
     healthCheckPath: /health
     envVars:

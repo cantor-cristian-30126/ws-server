@@ -1,156 +1,163 @@
 /**
- * Smart Home – Camera Server (Face Detection)
- * Deploy pe Render ca Web Service (Node.js)
- *
- * Endpoint-uri:
- *  POST /api/face-detected   ← ESP32-CAM trimite imaginea
- *  GET  /api/latest-face     ← Android app cere ultima detecție
- *  GET  /api/face-history    ← Android app cere istoricul
- *  GET  /health              ← health-check Render
+ * Smart Home – Camera Server cu detecție facială server-side
+ * Primeşte JPEG de la ESP32-CAM, detectează fețe, notifică Android.
  */
 
-const express  = require('express');
-const multer   = require('multer');
-const cors     = require('cors');
+const express = require('express');
+const cors    = require('cors');
+const path    = require('path');
+const fs      = require('fs');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-
-// ─── CONFIG ────────────────────────────────────────────────────────────────
-const API_KEY      = process.env.API_KEY || '57271a26c9cf4eeec7fe46a91f2f4c81';
-const MAX_HISTORY  = 20;   // câte detecții păstrăm în memorie
-// ────────────────────────────────────────────────────────────────────────────
+const API_KEY = process.env.API_KEY || '57271a26c9cf4eeec7fe46a91f2f4c81';
 
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.raw({ type: 'image/jpeg', limit: '5mb' }));
 
-// multer – stocare în memorie (Render free nu are disk persistent)
-const upload = multer({
-    storage: multer.memoryStorage(),
-    limits:  { fileSize: 5 * 1024 * 1024 }  // 5 MB max
-});
-
-// ─── STATE ─────────────────────────────────────────────────────────────────
-/** @type {{ id: number, timestamp: string, imageBase64: string, confidence: number }[]} */
-let faceHistory = [];
-let detectionCounter = 0;
+// ─── STATE ──────────────────────────────────────────────────────────────────
+let faceHistory    = [];
+let detectionCount = 0;
+let faceDetector   = null;
+let modelsLoaded   = false;
 // ────────────────────────────────────────────────────────────────────────────
 
-// ─── MIDDLEWARE: verificare API key ────────────────────────────────────────
+// ─── AUTH ────────────────────────────────────────────────────────────────────
 function requireApiKey(req, res, next) {
-    const key = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
-    if (key !== API_KEY) {
-        return res.status(401).json({ error: 'Unauthorized' });
-    }
-    next();
+  const key = req.headers['x-api-key'] || (req.headers['authorization'] || '').replace('Bearer ', '');
+  if (key !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  next();
 }
-// ────────────────────────────────────────────────────────────────────────────
 
-// ─── HEALTH CHECK ──────────────────────────────────────────────────────────
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime() });
-});
-// ────────────────────────────────────────────────────────────────────────────
+// ─── INIȚIALIZARE face-api.js ────────────────────────────────────────────────
+async function loadFaceDetector() {
+  try {
+    const faceapi = require('@vladmandic/face-api');
+    const tf      = require('@tensorflow/tfjs-node');
+    const canvas  = require('canvas');
 
-/**
- * POST /api/face-detected
- * Trimis de ESP32-CAM când detectează o față.
- *
- * Acceptă două formate:
- *  1. multipart/form-data  → câmpul "image" (JPEG binar) + opțional "confidence"
- *  2. application/json     → { "imageBase64": "<base64>", "confidence": 0.95 }
- */
-app.post('/api/face-detected', requireApiKey, upload.single('image'), (req, res) => {
-    try {
-        let imageBase64 = null;
-        let confidence  = 0;
+    // Patch faceapi cu canvas
+    const { Canvas, Image, ImageData } = canvas;
+    faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
-        if (req.file) {
-            // multipart/form-data
-            imageBase64 = req.file.buffer.toString('base64');
-            confidence  = parseFloat(req.body?.confidence ?? 0);
-        } else if (req.body?.imageBase64) {
-            // JSON cu base64
-            imageBase64 = req.body.imageBase64;
-            confidence  = parseFloat(req.body?.confidence ?? 0);
-        } else {
-            return res.status(400).json({ error: 'No image provided' });
-        }
+    const modelsPath = path.join(__dirname, 'models');
+    await faceapi.nets.tinyFaceDetector.loadFromDisk(modelsPath);
 
-        detectionCounter++;
-        const entry = {
-            id:          detectionCounter,
-            timestamp:   new Date().toISOString(),
-            imageBase64: imageBase64,
-            confidence:  confidence
-        };
+    faceDetector  = faceapi;
+    modelsLoaded  = true;
+    console.log('✅ Face detector încărcat cu succes');
+  } catch (err) {
+    console.error('⚠️  Face detector nu s-a putut încărca:', err.message);
+    console.log('Serverul continuă fără detecție facială (salvează toate frame-urile)');
+  }
+}
 
-        // adaugă la început, menține maxim MAX_HISTORY
-        faceHistory.unshift(entry);
-        if (faceHistory.length > MAX_HISTORY) {
-            faceHistory = faceHistory.slice(0, MAX_HISTORY);
-        }
+// ─── DETECȚIE FACIALĂ ────────────────────────────────────────────────────────
+async function detectFace(jpegBuffer) {
+  if (!modelsLoaded || !faceDetector) {
+    // Dacă modelele nu sunt încărcate, returnăm true (salvăm tot)
+    return { detected: true, confidence: 1.0, count: 1 };
+  }
 
-        console.log(`[${entry.timestamp}] Față detectată #${entry.id} (confidence: ${confidence})`);
-        res.json({ ok: true, id: entry.id });
+  try {
+    const { createImageData, createCanvas } = require('canvas');
+    const img   = await require('canvas').loadImage(jpegBuffer);
+    const cnv   = require('canvas').createCanvas(img.width, img.height);
+    const ctx   = cnv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
 
-    } catch (err) {
-        console.error('Eroare face-detected:', err);
-        res.status(500).json({ error: 'Internal server error' });
+    const detections = await faceDetector.detectAllFaces(
+      cnv,
+      new faceDetector.TinyFaceDetectorOptions({ scoreThreshold: 0.5 })
+    );
+
+    if (detections.length > 0) {
+      const best = Math.max(...detections.map(d => d.score));
+      return { detected: true, confidence: best, count: detections.length };
     }
+    return { detected: false, confidence: 0, count: 0 };
+  } catch (err) {
+    console.error('Eroare detecție:', err.message);
+    return { detected: false, confidence: 0, count: 0 };
+  }
+}
+
+// ─── ENDPOINT: ESP32-CAM trimite frame ──────────────────────────────────────
+app.post('/api/upload-frame', requireApiKey, async (req, res) => {
+  try {
+    const jpegBuffer = req.body;
+    if (!jpegBuffer || jpegBuffer.length < 100) {
+      return res.status(400).json({ error: 'Frame invalid' });
+    }
+
+    console.log(`Frame primit: ${jpegBuffer.length} bytes`);
+
+    const result = await detectFace(jpegBuffer);
+
+    if (result.detected) {
+      detectionCount++;
+      const entry = {
+        id:          detectionCount,
+        timestamp:   new Date().toISOString(),
+        imageBase64: jpegBuffer.toString('base64'),
+        confidence:  parseFloat(result.confidence.toFixed(3)),
+        faceCount:   result.count
+      };
+
+      faceHistory.unshift(entry);
+      if (faceHistory.length > 20) faceHistory = faceHistory.slice(0, 20);
+
+      console.log(`✅ FAȚĂ DETECTATĂ #${entry.id} – confidence: ${entry.confidence}`);
+      res.json({ detected: true, id: entry.id, confidence: entry.confidence });
+    } else {
+      res.json({ detected: false });
+    }
+
+  } catch (err) {
+    console.error('Eroare upload-frame:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-/**
- * GET /api/latest-face
- * Returnează cea mai recentă detecție.
- * Dacă nu există nicio detecție → { detected: false }
- */
+// ─── ENDPOINT: Android cere ultima detecție ──────────────────────────────────
 app.get('/api/latest-face', requireApiKey, (req, res) => {
-    if (faceHistory.length === 0) {
-        return res.json({ detected: false });
-    }
-    const latest = faceHistory[0];
-    res.json({
-        detected:    true,
-        id:          latest.id,
-        timestamp:   latest.timestamp,
-        imageBase64: latest.imageBase64,
-        confidence:  latest.confidence
-    });
+  if (faceHistory.length === 0) return res.json({ detected: false });
+  const latest = faceHistory[0];
+  res.json({
+    detected:    true,
+    id:          latest.id,
+    timestamp:   latest.timestamp,
+    imageBase64: latest.imageBase64,
+    confidence:  latest.confidence,
+    faceCount:   latest.faceCount
+  });
 });
 
-/**
- * GET /api/face-history?limit=10
- * Returnează istoricul detecțiilor (fără imagine, doar metadata).
- */
+// ─── ENDPOINT: Istoric (fără imagini) ────────────────────────────────────────
 app.get('/api/face-history', requireApiKey, (req, res) => {
-    const limit  = Math.min(parseInt(req.query.limit ?? 10), MAX_HISTORY);
-    const result = faceHistory.slice(0, limit).map(e => ({
-        id:         e.id,
-        timestamp:  e.timestamp,
-        confidence: e.confidence
-    }));
-    res.json({ count: result.length, items: result });
+  const limit  = Math.min(parseInt(req.query.limit || 10), 20);
+  const items  = faceHistory.slice(0, limit).map(e => ({
+    id:         e.id,
+    timestamp:  e.timestamp,
+    confidence: e.confidence,
+    faceCount:  e.faceCount
+  }));
+  res.json({ count: items.length, items });
 });
 
-/**
- * GET /api/face-image/:id
- * Returnează imaginea pentru un ID specific.
- */
-app.get('/api/face-image/:id', requireApiKey, (req, res) => {
-    const id    = parseInt(req.params.id);
-    const entry = faceHistory.find(e => e.id === id);
-    if (!entry) {
-        return res.status(404).json({ error: 'Not found' });
-    }
-    // trimite ca JPEG direct
-    const imgBuffer = Buffer.from(entry.imageBase64, 'base64');
-    res.set('Content-Type', 'image/jpeg');
-    res.send(imgBuffer);
+// ─── HEALTH CHECK ────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    status:       'ok',
+    uptime:       Math.floor(process.uptime()),
+    modelsLoaded: modelsLoaded,
+    detections:   detectionCount
+  });
 });
 
-// ─── START ──────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-    console.log(`Smart Home Camera Server pornit pe portul ${PORT}`);
-    console.log(`API Key activ: ${API_KEY.substring(0, 8)}...`);
+// ─── START ───────────────────────────────────────────────────────────────────
+app.listen(PORT, async () => {
+  console.log(`🚀 Server pornit pe portul ${PORT}`);
+  await loadFaceDetector();
 });
