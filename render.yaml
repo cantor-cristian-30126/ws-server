@@ -3,7 +3,7 @@ services:
     name: ws-server
     env: node
     plan: free
-    buildCommand: npm install && node download-models.js
+    buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
     envVars:
