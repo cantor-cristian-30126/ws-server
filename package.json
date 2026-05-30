@@ -1,7 +1,7 @@
 {
   "name": "ws-server",
-  "version": "4.0.0",
-  "description": "Smart Home Command Broker – Android to Raspberry Pi",
+  "version": "5.0.0",
+  "description": "Smart Home Command Broker with FCM notifications",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
