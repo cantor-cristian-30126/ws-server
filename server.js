@@ -215,7 +215,8 @@ app.get('/health', (req, res) => {
     systemStatus,
     pendingCommand,
     registeredTokens: fcmTokens.length,
-    lastPiUpdateAt: lastStatusAt
+    lastPiUpdateAt: lastStatusAt,
+    lastDetection
   });
 });
 
