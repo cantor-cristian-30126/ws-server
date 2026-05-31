@@ -4,8 +4,8 @@ const https   = require('https');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const API_KEY     = process.env.API_KEY     || '57271a26c9cf4eeec7fe46a91f2f4c81';
-const PROJECT_ID  = process.env.FCM_PROJECT_ID  || 'notificari-7c8d6';
+const API_KEY    = process.env.API_KEY        || '57271a26c9cf4eeec7fe46a91f2f4c81';
+const PROJECT_ID = process.env.FCM_PROJECT_ID || 'notificari-7c8d6';
 
 app.use(cors());
 app.use(express.json());
@@ -14,7 +14,7 @@ app.use(express.json());
 let pendingCommand = null;
 let systemStatus   = 'stopped';
 let lastStatusAt   = null;
-let fcmTokens      = [];        // tokenii FCM ai dispozitivelor Android
+let fcmTokens      = [];
 let fcmAccessToken = null;
 let fcmTokenExpiry = 0;
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ function requireApiKey(req, res, next) {
   next();
 }
 
-// ─── FCM: obtine access token prin Service Account ───────────────────────────
+// ─── FCM: obtine access token ─────────────────────────────────────────────────
 async function getFcmAccessToken() {
   if (fcmAccessToken && Date.now() < fcmTokenExpiry) return fcmAccessToken;
 
@@ -41,21 +41,17 @@ async function getFcmAccessToken() {
     exp: now + 3600
   };
 
-  // Codifica JWT manual (fara librarie externa)
+  const crypto  = require('crypto');
   const header  = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const payload = Buffer.from(JSON.stringify(claim)).toString('base64url');
   const toSign  = `${header}.${payload}`;
-
-  const crypto = require('crypto');
-  const sign   = crypto.createSign('RSA-SHA256');
+  const sign    = crypto.createSign('RSA-SHA256');
   sign.update(toSign);
-  const signature = sign.sign(serviceAccount.private_key, 'base64url');
-  const jwt = `${toSign}.${signature}`;
+  const jwt = `${toSign}.${sign.sign(serviceAccount.private_key, 'base64url')}`;
 
-  // Schimba JWT pe access token
   const tokenResponse = await new Promise((resolve, reject) => {
     const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
-    const req = https.request({
+    const req  = https.request({
       hostname: 'oauth2.googleapis.com',
       path: '/token',
       method: 'POST',
@@ -78,8 +74,8 @@ async function getFcmAccessToken() {
   return fcmAccessToken;
 }
 
-// ─── FCM: trimite notificare ──────────────────────────────────────────────────
-async function sendFcmNotification(title, body) {
+// ─── FCM: trimite notificare (cu sau fara imagine) ────────────────────────────
+async function sendFcmNotification(title, body, imageUrl = null) {
   if (fcmTokens.length === 0) {
     console.log('[FCM] Niciun token inregistrat, skip notificare.');
     return;
@@ -89,13 +85,25 @@ async function sendFcmNotification(title, body) {
     const accessToken = await getFcmAccessToken();
 
     for (const token of fcmTokens) {
-      const message = JSON.stringify({
-        message: {
-          token,
-          notification: { title, body },
-          android: { priority: 'high' }
+      const messagePayload = {
+        token,
+        notification: { title, body },
+        android: {
+          priority: 'high',
+          notification: {
+            sound: 'default',
+            // Imaginea apare in notificare pe Android
+            ...(imageUrl && { image: imageUrl })
+          }
+        },
+        // Trimitem imageUrl si ca data ca sa o putem afisa in app
+        data: {
+          name: title,
+          ...(imageUrl && { imageUrl })
         }
-      });
+      };
+
+      const message = JSON.stringify({ message: messagePayload });
 
       await new Promise((resolve, reject) => {
         const req = https.request({
@@ -111,7 +119,7 @@ async function sendFcmNotification(title, body) {
           let data = '';
           res.on('data', chunk => data += chunk);
           res.on('end', () => {
-            console.log(`[FCM] Notificare trimisa (${res.statusCode}): ${data}`);
+            console.log(`[FCM] Notificare trimisa (${res.statusCode})`);
             resolve();
           });
         });
@@ -121,12 +129,11 @@ async function sendFcmNotification(title, body) {
       });
     }
   } catch (err) {
-    console.error('[FCM] Eroare la trimitere notificare:', err.message);
+    console.error('[FCM] Eroare:', err.message);
   }
 }
 
 // ─── ANDROID: inregistreaza token FCM ────────────────────────────────────────
-// POST /api/register-token  { "token": "fcm_token_here" }
 app.post('/api/register-token', requireApiKey, (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'Token lipsa.' });
@@ -174,15 +181,19 @@ app.post('/api/pi/status', requireApiKey, (req, res) => {
 });
 
 // ─── PI: raporteaza detectie faciala ─────────────────────────────────────────
-// POST /api/pi/face-detected  { "name": "cristi" }
+// POST /api/pi/face-detected  { "name": "cristi", "imageUrl": "https://..." }
 app.post('/api/pi/face-detected', requireApiKey, (req, res) => {
-  const { name } = req.body;
+  const { name, imageUrl } = req.body;
   const displayName = name || 'Cineva';
-  console.log(`[Pi] Fata detectata: ${displayName}`);
-  sendFcmNotification(
-    '🔐 Fata Detectata',
-    `${displayName} a fost recunoscut. Yala s-a deschis.`
-  );
+  const isUnknown   = displayName === 'Unknown';
+
+  const title = isUnknown ? '⚠️ Persoana necunoscuta!' : '🔐 Fata Detectata';
+  const body  = isUnknown
+    ? 'O persoana necunoscuta a fost detectata la usa!'
+    : `${displayName} a fost recunoscut. Yala s-a deschis.`;
+
+  console.log(`[Pi] Fata detectata: ${displayName}${imageUrl ? ' (cu imagine)' : ''}`);
+  sendFcmNotification(title, body, imageUrl || null);
   res.json({ ok: true });
 });
 
