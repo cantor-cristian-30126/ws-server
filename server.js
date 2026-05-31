@@ -17,7 +17,7 @@ let lastStatusAt   = null;
 let fcmTokens      = [];
 let fcmAccessToken = null;
 let fcmTokenExpiry = 0;
-let lastDetection  = null;  // { name, imageUrl, timestamp }
+let lastDetections = [];    // Array de max 10 { name, imageUrl, timestamp }
 // ─────────────────────────────────────────────────────────────────────────────
 
 function requireApiKey(req, res, next) {
@@ -184,12 +184,15 @@ app.post('/api/pi/face-detected', requireApiKey, (req, res) => {
   const displayName = name || 'Cineva';
   const isUnknown   = displayName === 'Unknown';
 
-  // Salveaza ultima detectie
-  lastDetection = {
-    name:      displayName,
-    imageUrl:  imageUrl || null,
-    timestamp: new Date().toISOString()
-  };
+  // Salveaza in lista (max 10)
+  if (imageUrl) {
+    detectionsCount: lastDetections.lengths.unshift({
+      name:      displayName,
+      imageUrl,
+      timestamp: new Date().toISOString()
+    });
+    if (lastDetections.length > 10) lastDetections.pop();
+  }
 
   const title = isUnknown ? '⚠️ Persoana necunoscuta!' : '🔐 Fata Detectata';
   const body  = isUnknown
@@ -201,10 +204,14 @@ app.post('/api/pi/face-detected', requireApiKey, (req, res) => {
   res.json({ ok: true });
 });
 
-// ─── ANDROID: preia ultima detectie (polling) ─────────────────────────────────
-// GET /api/last-detection
+// ─── ANDROID: preia ultima detectie ──────────────────────────────────────────
 app.get('/api/last-detection', requireApiKey, (req, res) => {
-  res.json({ detection: lastDetection });
+  res.json({ detection: lastDetections[0] || null });
+});
+
+// ─── ANDROID: preia toate detectiile (max 10) ────────────────────────────────
+app.get('/api/detections', requireApiKey, (req, res) => {
+  res.json({ detections: lastDetections });
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
@@ -216,7 +223,7 @@ app.get('/health', (req, res) => {
     pendingCommand,
     registeredTokens: fcmTokens.length,
     lastPiUpdateAt: lastStatusAt,
-    lastDetection
+    detectionsCount: lastDetections.length
   });
 });
 
