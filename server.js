@@ -87,18 +87,14 @@ async function sendFcmNotification(title, body, imageUrl = null) {
     for (const token of fcmTokens) {
       const messagePayload = {
         token,
-        notification: { title, body },
+        // Fara "notification" — totul merge prin "data"
+        // Asa onMessageReceived e apelat mereu, inclusiv in background
         android: {
-          priority: 'high',
-          notification: {
-            sound: 'default',
-            // Imaginea apare in notificare pe Android
-            ...(imageUrl && { image: imageUrl })
-          }
+          priority: 'high'
         },
-        // Trimitem imageUrl si ca data ca sa o putem afisa in app
         data: {
-          name: title,
+          title,
+          body,
           ...(imageUrl && { imageUrl })
         }
       };
