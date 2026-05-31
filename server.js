@@ -17,6 +17,7 @@ let lastStatusAt   = null;
 let fcmTokens      = [];
 let fcmAccessToken = null;
 let fcmTokenExpiry = 0;
+let lastDetection  = null;  // { name, imageUrl, timestamp }
 // ─────────────────────────────────────────────────────────────────────────────
 
 function requireApiKey(req, res, next) {
@@ -183,14 +184,27 @@ app.post('/api/pi/face-detected', requireApiKey, (req, res) => {
   const displayName = name || 'Cineva';
   const isUnknown   = displayName === 'Unknown';
 
+  // Salveaza ultima detectie
+  lastDetection = {
+    name:      displayName,
+    imageUrl:  imageUrl || null,
+    timestamp: new Date().toISOString()
+  };
+
   const title = isUnknown ? '⚠️ Persoana necunoscuta!' : '🔐 Fata Detectata';
   const body  = isUnknown
     ? 'O persoana necunoscuta a fost detectata la usa!'
     : `${displayName} a fost recunoscut. Yala s-a deschis.`;
 
   console.log(`[Pi] Fata detectata: ${displayName}${imageUrl ? ' (cu imagine)' : ''}`);
-  sendFcmNotification(title, body, imageUrl || null);
+  sendFcmNotification(title, body, null);  // notificarile raman fara imagine
   res.json({ ok: true });
+});
+
+// ─── ANDROID: preia ultima detectie (polling) ─────────────────────────────────
+// GET /api/last-detection
+app.get('/api/last-detection', requireApiKey, (req, res) => {
+  res.json({ detection: lastDetection });
 });
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
